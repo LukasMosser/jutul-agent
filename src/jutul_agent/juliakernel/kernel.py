@@ -166,14 +166,16 @@ class JuliaKernel:
         """
         if self._proc is None:
             raise RuntimeError("JuliaKernel must be used inside an `async with` block")
-        if not self.running:
-            # Every call after a death lands here, so it explains itself the same
-            # way the one that witnessed the death does; otherwise only the first
-            # caller learns why and the rest see a bare "not running".
-            raise await self._explain_death(KernelDied("the Julia kernel exited unexpectedly"))
-        conn = self._conn
-        assert conn is not None
         async with self._lock:
+            # Checked under the lock: an eval queued behind a cancelled one can find
+            # that the cancel's recovery restarted Julia, with a new connection.
+            if not self.running:
+                # Every call after a death lands here, so it explains itself the same
+                # way the one that witnessed the death does; otherwise only the first
+                # caller learns why and the rest see a bare "not running".
+                raise await self._explain_death(KernelDied("the Julia kernel exited unexpectedly"))
+            conn = self._conn
+            assert conn is not None
             pending = conn.begin_eval(on_chunk)
             try:
                 await conn.send_exec(pending, code)

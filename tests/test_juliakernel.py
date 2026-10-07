@@ -335,6 +335,30 @@ async def test_cancelled_eval_interrupts_and_preserves_state() -> None:
 
 @pytest.mark.integration
 @needs_julia
+async def test_an_eval_queued_behind_a_restart_runs_on_the_new_session() -> None:
+    """An eval waiting for the lock while a cancel's recovery restarts Julia runs
+    on the restarted process, not on the connection the restart tore down.
+
+    A client that gives up on a call can send the next one at once (an MCP client
+    does), so it queues behind the recovery. The eval here defers the interrupt
+    past the drain window, which is what forces the restart.
+    """
+    async with JuliaKernel(KernelConfig()) as k:
+        stuck = asyncio.create_task(k.eval("Base.disable_sigint(() -> sleep(30)); 1"))
+        await asyncio.sleep(0.5)  # let it start
+        queued = asyncio.create_task(k.eval("1 + 1"))
+        await asyncio.sleep(0.1)  # let it wait for the lock
+        stuck.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stuck
+        assert not k.cancel_preserved_state, "the eval ignored the interrupt"
+        result = await asyncio.wait_for(queued, timeout=60)
+        assert result.error is None, result.error
+        assert result.output == "2"
+
+
+@pytest.mark.integration
+@needs_julia
 async def test_reset_and_restart_clear_state() -> None:
     async with JuliaKernel(KernelConfig()) as k:
         await k.eval("y = 7")
