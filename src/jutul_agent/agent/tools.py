@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 from jutul_agent.juliakernel.result import OnChunk, OutputChunk
 from jutul_agent.paths import resolve_in_workspace, workspace_root
 from jutul_agent.session import Session
+from jutul_agent.surfaces import renders_in_browser
 from jutul_agent.trace.schema import ARTIFACT, ATTEMPT, artifact_payload
 
 # langgraph exposes the active tool call's output-delta writer only through this
@@ -248,7 +249,7 @@ def _fmt_metric(value: Any) -> str:
 
 
 def make_write_report_tool(session: Session, *, surface: str | None = None):
-    web = (surface or session.surface) == "web"
+    web = renders_in_browser(surface or session.surface)
 
     @tool
     async def write_report(
