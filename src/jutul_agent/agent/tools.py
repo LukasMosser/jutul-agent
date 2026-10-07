@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from langchain_core.tools import tool
@@ -30,17 +32,25 @@ except Exception:  # pragma: no cover - langgraph internals moved
     _tool_call_writer = None  # type: ignore[assignment]
 
 
+# A front end that runs the tools outside a langgraph graph (the MCP server) sets
+# this around a call to receive the same live output the graph would stream.
+tool_output_writer: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "tool_output_writer", default=None
+)
+
+
 def _capture_delta_writer() -> OnChunk | None:
     """Return an ``on_chunk`` that streams kernel output as tool-output deltas.
 
-    The writer is captured here, in the tool's context where langgraph set the
-    ContextVar, so it stays valid when the kernel's pump task (a different task)
-    invokes it. Returns ``None`` outside a streaming graph (e.g. unit tests).
+    The writer is captured here, in the tool's context where the caller set the
+    ContextVar (``tool_output_writer``, else langgraph's), so it stays valid when
+    the kernel's pump task (a different task) invokes it. Returns ``None`` when
+    nobody is streaming (e.g. unit tests).
     """
 
-    if _tool_call_writer is None:
-        return None
-    writer = _tool_call_writer.get()
+    writer = tool_output_writer.get()
+    if writer is None and _tool_call_writer is not None:
+        writer = _tool_call_writer.get()
     if writer is None:
         return None
 
