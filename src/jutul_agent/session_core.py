@@ -175,6 +175,7 @@ async def start_core(
 
     from jutul_agent import sysimage as sysimage_mod
     from jutul_agent.agent.capabilities import collect_dependency_paths, discover_extensions
+    from jutul_agent.credentials import is_secret_env_var
     from jutul_agent.julia.requirements import require_julia
     from jutul_agent.julia.threads import (
         HYPRE_THREADS_ENV_VAR,
@@ -261,6 +262,7 @@ async def start_core(
             stderr_file=sdir / "julia-startup.log",
             cwd=ws,
             env=env,
+            env_filter=is_secret_env_var,
             threads=str(compute_threads),
         )
         kernel = await stack.enter_async_context(JuliaKernel(kernel_config))

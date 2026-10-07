@@ -26,9 +26,14 @@ def fake_kernel_world(monkeypatch) -> dict[str, Any]:
     from jutul_agent.julia import requirements as requirements_mod
     from jutul_agent.simulators import env_setup as env_setup_mod
 
-    world: dict[str, Any] = {"kernel": FakeJulia(), "prepared": []}
+    world: dict[str, Any] = {"kernel": FakeJulia(), "prepared": [], "configs": []}
     monkeypatch.setattr(requirements_mod, "require_julia", lambda *a, **kw: None)
-    monkeypatch.setattr(juliakernel_mod, "JuliaKernel", lambda config: world["kernel"])
+
+    def _kernel(config):
+        world["configs"].append(config)
+        return world["kernel"]
+
+    monkeypatch.setattr(juliakernel_mod, "JuliaKernel", _kernel)
     monkeypatch.setattr(builder_mod, "resolve_package_sources", lambda project: ["pkg-src"])
 
     def _no_agent(*_a, **_kw):
@@ -74,6 +79,30 @@ async def test_start_core_opens_a_session_without_an_agent(
         assert core.session.julia is not core.kernel
         # The warm-up waits for the caller.
         assert core.warmup_task is None
+    finally:
+        await core.aclose()
+
+
+async def test_the_kernel_starts_without_credentials(
+    fake_kernel_world: dict[str, Any], tmp_path: Path
+) -> None:
+    """Julia runs the model's code, so the kernel withholds every credential."""
+    from jutul_agent.credentials import is_secret_env_var
+    from jutul_agent.session_core import start_core
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    core = await start_core(
+        simulator=make_fake_adapter(tmp_path),
+        surface="tui",
+        workspace=workspace,
+        state_root=tmp_path,
+        discover=False,
+        virtual_display=False,
+    )
+    try:
+        [config] = fake_kernel_world["configs"]
+        assert config.env_filter is is_secret_env_var
     finally:
         await core.aclose()
 

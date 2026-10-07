@@ -601,6 +601,8 @@ class JuliaKernel:
         args.extend([str(_SERVER_JL), str(port)])
 
         env = dict(os.environ)
+        if cfg.env_filter is not None:
+            env = {name: value for name, value in env.items() if not cfg.env_filter(name)}
         if cfg.env:
             env.update(cfg.env)
         env["JK_TOKEN"] = self._token
