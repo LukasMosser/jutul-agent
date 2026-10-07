@@ -43,7 +43,10 @@ A `Session` (`session.py`) is the unit of one invocation: a session id, a
 state directory, the trace log, and a handle to the Julia kernel. A
 `SessionHost` wraps it with everything needed to take a turn (the agent, the
 turn runner, rebuild-in-place for `/model` and `/approval-mode`, compaction,
-titling), so front ends stay presentation-only.
+titling), so front ends stay presentation-only. The kernel half of the
+bootstrap (env preparation, system image, virtual display, kernel, `Session`,
+warm-up) is `start_core` (`session_core.py`); `SessionHost.start` adds the
+checkpointer and the agent on top of it.
 
 `build_agent` (`agent/builder.py`) assembles a
 [deepagents](https://github.com/langchain-ai/deepagents) agent around the
