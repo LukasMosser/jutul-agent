@@ -105,7 +105,9 @@ and check on staged `.py` files. To verify the whole tree like CI:
 - `src/jutul_agent/interfaces/`: `cli`, the Textual `tui`, and the `server`
   (FastAPI REST + per-session WebSocket). The browser UI is a React + TypeScript
   app in `server/webapp/` (see its README), built into `server/web_dist/`
-  (committed and shipped, so an install needs no Node).
+  (committed and shipped, so an install needs no Node). The routes that let a
+  browser view a session's output (artifacts, the `/live` plot proxy, popouts)
+  are `server/viewer.py`'s `add_viewer_routes`, installable on any app.
 - `tests/`: end-to-end, chat, CLI, and tool coverage. `tests/integration/`
   needs Julia; `tests/live/` needs an LLM provider key.
 

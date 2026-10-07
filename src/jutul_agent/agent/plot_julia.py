@@ -531,7 +531,7 @@ def make_plot_julia_tool(session: Session, *, surface: str | None = None):
             else:
                 # A site-relative path, not the raw ``127.0.0.1:<port>`` Bonito
                 # actually listens on: the browser reaches it through this app
-                # server's ``/live/...`` reverse proxy (see interfaces/server/app.py),
+                # server's ``/live/...`` reverse proxy (see interfaces/server/viewer.py),
                 # which is the one port whatever forwarded this session's connection
                 # (an SSH tunnel, VS Code/Cursor remote, Docker) already knows about.
                 # ``session.web_plot_port`` is what tells that proxy where to send it.
