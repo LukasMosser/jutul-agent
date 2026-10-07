@@ -108,6 +108,10 @@ and check on staged `.py` files. To verify the whole tree like CI:
   (committed and shipped, so an install needs no Node). The routes that let a
   browser view a session's output (artifacts, the `/live` plot proxy, popouts)
   are `server/viewer.py`'s `add_viewer_routes`, installable on any app.
+  `mcp/` is the stdio MCP server (`jutul-agent mcp`): a core plus
+  `build_tools`, no agent. `runtime.py` owns the session, `server.py` maps it
+  to the protocol, and `loopback.py` serves the viewer routes on a loopback
+  port for the links in tool results.
 - `tests/`: end-to-end, chat, CLI, and tool coverage. `tests/integration/`
   needs Julia; `tests/live/` needs an LLM provider key.
 

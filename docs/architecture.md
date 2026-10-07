@@ -21,12 +21,15 @@ one trace.
 The interface is chosen explicitly (`jutul-agent` with no arguments prints the
 chooser): `web` serves the browser UI over an HTTP + WebSocket server, `tui` is
 the Textual terminal UI, and `run "<prompt>"` runs one headless turn, which is
-what scripts, CI, and the bench use. Subcommands handle the rest: `init`
+what scripts, CI, and the bench use. `mcp` serves the session's tools to an MCP
+client that brings its own model and chat ([the MCP interface](mcp.md)).
+Subcommands handle the rest: `init`
 bootstraps a workspace, `doctor` diagnoses a broken setup, `transcript` renders
 a past session, `eval` runs bench suites. The CLI entry points live in
 `src/jutul_agent/interfaces/cli/`, the terminal UI in `interfaces/tui/`, and the
 server plus its bundled web app in `interfaces/server/` (its protocol has its
-own page: [the server interface](server-interface.md)).
+own page: [the server interface](server-interface.md)), and the MCP server in
+`interfaces/mcp/`.
 
 Every interface funnels into the same place: `SessionHost.start`
 (`session_host.py`) stands up the session (env preparation, kernel, trace,
@@ -46,7 +49,8 @@ turn runner, rebuild-in-place for `/model` and `/approval-mode`, compaction,
 titling), so front ends stay presentation-only. The kernel half of the
 bootstrap (env preparation, system image, virtual display, kernel, `Session`,
 warm-up) is `start_core` (`session_core.py`); `SessionHost.start` adds the
-checkpointer and the agent on top of it.
+checkpointer and the agent on top of it. The MCP server uses a core alone, with
+the tools from `build_tools` and no agent.
 
 `build_agent` (`agent/builder.py`) assembles a
 [deepagents](https://github.com/langchain-ai/deepagents) agent around the
