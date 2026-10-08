@@ -29,6 +29,7 @@ Julia -> Python   RDY <token> 0           handshake
                   OUT <stream> <n>        live stdout/stderr bytes
                   RES <id> <status> <n>   one result per eval (ok | err | int)
 Python -> Julia   EXE <id> <n>            code to evaluate
+                  INT <id> 0              interrupt eval <id>, if it is running
 ```
 
 No payload travels as a bare line, so frames are binary-safe and
@@ -65,12 +66,27 @@ agent:
 Two details make delivery reliable:
 
 - The kernel always launches with an interactive thread (`--threads N,1`).
-  That pins the eval loop to one thread while the output pumps run on the
-  default pool. Julia delivers the interrupt on the root task's thread, and
-  a pump sharing that thread could swallow it inside one of its own
-  uninterruptible windows.
+  That pins the eval loop to one thread while the output pumps (and the
+  control reader) run on the default pool. Julia delivers the interrupt on
+  the root task's thread, and a pump sharing that thread could swallow it
+  inside one of its own uninterruptible windows.
 - The result handoff runs with interrupts deferred, so a late interrupt cannot
   tear an eval's output apart from its result frame.
+
+Cancelling an eval interrupts it in two steps, because the signal alone is not
+reliable for an eval that is waiting. Julia raises the `InterruptException` in
+whichever task is running on the eval's thread when the signal arrives. While
+the eval computes, that is the eval. While it waits (a `sleep`, a socket, a
+lock), it can be any other task the session started on that thread, such as a
+live plot server's handler. That task dies of the exception, and the eval runs
+on into the drain timeout, which costs the session a restart. So the supervisor
+first sends `INT <id>`. A reader task on the default pool takes it in even while
+the eval runs, and an interrupter task on the eval's own thread wakes the
+waiting eval with the exception directly, then interrupts any `Distributed`
+workers (POSIX only; on Windows, `Distributed` would end them instead). An
+`INT` for an eval that has not started cancels it when it would start; one for
+an eval that has finished is ignored. An eval still running a second later is
+computing, and only the signal reaches it, so the supervisor then sends that.
 
 If a signal can't be delivered (e.g. no console to target on Windows) or the
 eval ignores it, the supervisor falls back to a restart (the only case where

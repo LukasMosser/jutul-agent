@@ -8,11 +8,11 @@ process at the fd level, so an eval's result frame arrives only after all of
 its output; completion is one event, ordered by TCP. Evaluation runs
 in-process in that Julia process, so a ``Distributed`` worker pool launched
 from user code uses it the normal way (the process is the cluster master). The
-kernel is the supervisor: it spawns, interrupts (SIGINT on POSIX, CTRL_BREAK on
-Windows), and respawns the process, so a reset never takes the surrounding
-Python session down with it. It counts the processes it has started
-(``generation``) and records why the latest one replaced the one before
-(``last_restart``). The package depends only on the standard library.
+kernel is the supervisor: it spawns, interrupts (an ``INT`` frame, then SIGINT
+on POSIX or CTRL_BREAK on Windows), and respawns the process, so a reset never
+takes the surrounding Python session down with it. It counts the processes it
+has started (``generation``) and records why the latest one replaced the one
+before (``last_restart``). The package depends only on the standard library.
 """
 
 from __future__ import annotations
@@ -35,7 +35,10 @@ from .result import EvalResult, OnChunk
 from .text import render_terminal_output
 
 _SERVER_JL = Path(__file__).resolve().parent / "server.jl"
-# After cancelling an eval we interrupt it and wait this long for its result frame;
+# A cancelled eval is first interrupted through the server, which wakes a waiting
+# eval at once; one still running after this long is computing, and gets SIGINT.
+_INTERRUPT_SIGNAL_DELAY = 1.0
+# After interrupting a cancelled eval we wait this long for its result frame;
 # past this we treat it as wedged and restart.
 _INTERRUPT_DRAIN_TIMEOUT = 10.0
 # The pipes usually reach EOF a moment before the process is reaped, so allow the
@@ -276,12 +279,23 @@ class JuliaKernel:
     async def _recover_from_cancel(self, pending: PendingEval) -> None:
         """Leave the session usable after an eval was cancelled mid-flight.
 
-        If the eval is still running (its future is unresolved), soft-interrupt it
-        and wait for its result frame; the connection drops that stale result. If
-        the interrupt can't be delivered, or the eval ignores it, or the process
-        dies, fall back to a restart (the only case where REPL state is lost) — a
+        If the eval is still running (its future is unresolved), interrupt it and
+        wait for its result frame; the connection drops that stale result. The
+        interrupt comes in two steps. The server is asked first (an ``INT``
+        frame): it wakes a waiting eval with the exception itself, which SIGINT
+        cannot be relied on to do: SIGINT lands in whichever task is current on
+        the eval's thread, and while the eval waits, that can be any other task
+        running there (see server.jl). An eval still going after
+        ``_INTERRUPT_SIGNAL_DELAY`` is computing, which only the signal reaches.
+        If the signal can't be sent, the eval ignores both, or the process dies,
+        fall back to a restart (the only case where REPL state is lost): a
         running solve we can't interrupt must not be left to keep going.
         """
+        conn = self._conn
+        if not pending.future.done() and conn is not None:
+            with contextlib.suppress(Exception):
+                await conn.send_interrupt(pending)
+            await asyncio.wait({pending.future}, timeout=_INTERRUPT_SIGNAL_DELAY)
         # `and` short-circuits, so interrupt() is only attempted while the eval is
         # still running; a False return (no soft interrupt available) means restart.
         if not pending.future.done() and not await self.interrupt():
