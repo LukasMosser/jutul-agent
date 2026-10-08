@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -176,6 +178,58 @@ _POPOUT_WRAPPER_HTML = """<!doctype html>
 """
 
 
+# What a live plot's link shows once the plot is gone, in place of the bare error
+# its server answers: the iframe a popout or the canvas embeds shows this page.
+_PLOT_GONE_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>jutul-agent plot</title>
+<style>
+  html { color-scheme: light dark; }
+  body { margin: 0; height: 100vh; display: grid; place-items: center;
+         background: Canvas; color: CanvasText;
+         font: max(16px, 2vw)/1.5 system-ui, sans-serif; }
+  main { max-width: 34em; padding: 1em; text-align: center; }
+</style>
+</head>
+<body><main>
+<p><strong>This live plot has ended.</strong></p>
+<p>__WHY__</p>
+</main></body>
+</html>
+"""
+
+
+def time_ago(at: float) -> str:
+    """How long ago ``at`` (a ``time.time()``) was, in words, such as "3 min ago".
+
+    A duration rather than a time of day: the server's clock can be in another
+    time zone than the person reading it (a WSL distro on UTC, say).
+    """
+    minutes = int(max(0.0, time.time() - at) // 60)
+    if minutes < 1:
+        return "under a minute ago"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    return f"{minutes // 60} h {minutes % 60} min ago"
+
+
+def _plot_gone(session: Session | None) -> HTMLResponse:
+    """The page for a live plot that is no longer served, saying why if known."""
+    restart = getattr(getattr(session, "julia", None), "last_restart", None)
+    if session is None:
+        why = "The session that drew it is no longer running."
+    elif restart is not None:
+        why = (
+            f"Julia restarted {time_ago(restart.at)} because {restart.reason}, and a live "
+            "plot ends with the Julia session that drew it. Ask for the plot again."
+        )
+    else:
+        why = "It was closed, or the Julia session that drew it has ended."
+    return HTMLResponse(_PLOT_GONE_HTML.replace("__WHY__", html.escape(why)), status_code=404)
+
+
 def _resolve_artifact(output_dir: Path, path: str):
     """The artifact file for ``path``, or ``None`` if it escapes the artifacts dir."""
     base = (output_dir / "artifacts").resolve()
@@ -279,7 +333,16 @@ def add_viewer_routes(
         """
         session = live_session(session_id)
         port = session.web_plot_port if session is not None else None
+        # A plot's own page, as opposed to its assets: a browser shows what this
+        # answers, so a plot that is gone says so in words.
+        plot_page = (
+            request.method == "GET"
+            and path.startswith("viz/")
+            and _ROUTE_ID_RE.fullmatch(path.removeprefix("viz/")) is not None
+        )
         if port is None:
+            if plot_page:
+                return _plot_gone(session)
             raise HTTPException(status_code=404, detail="no live plot server for this session")
 
         import httpx
@@ -321,9 +384,15 @@ def add_viewer_routes(
                     timeout=httpx.Timeout(**_LIVE_HTTP_TIMEOUT),
                 )
             except httpx.TransportError as exc:
+                # Refused: nothing listens on the port, so Julia restarted since it
+                # was bound. (A timeout is a busy Julia, not a dead plot.)
+                if plot_page and isinstance(exc, httpx.ConnectError):
+                    return _plot_gone(session)
                 raise HTTPException(
                     status_code=502, detail=f"live plot server unreachable: {exc}"
                 ) from exc
+        if plot_page and upstream.status_code == 404:
+            return _plot_gone(session)  # the server runs, but no longer has this plot
         strip = {"content-length", "content-encoding", "transfer-encoding", "connection"}
         response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in strip}
         return Response(
