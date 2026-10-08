@@ -311,6 +311,7 @@ class JuliaKernel:
 
         if self._config.stderr_file is not None:
             self._config.stderr_file.parent.mkdir(parents=True, exist_ok=True)
+            _keep_previous_log(self._config.stderr_file)
             self._stderr_fh = open(self._config.stderr_file, "wb")  # noqa: SIM115
 
         command, args, env = self._build_launch(port)
@@ -466,6 +467,14 @@ class JuliaKernel:
         env["JK_TOKEN"] = self._token
 
         return cfg.julia_executable, args, env
+
+
+def _keep_previous_log(log: Path) -> None:
+    """Move the last process's log aside (``<stem>.prev<suffix>``) before a respawn
+    starts a fresh one, so that why the last process went away stays readable."""
+    with contextlib.suppress(OSError):
+        if log.stat().st_size > 0:
+            os.replace(log, log.with_name(f"{log.stem}.prev{log.suffix}"))
 
 
 def describe_exit(code: int | None) -> str:

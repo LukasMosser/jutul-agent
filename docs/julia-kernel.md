@@ -102,7 +102,9 @@ state was preserved.
   grow harness memory while the user decides to cancel.
 - If the process dies, every waiter fails fast with the reason the
   connection saw, and the startup log (`julia-startup.log` in the session
-  directory) keeps Julia's own boot errors.
+  directory) keeps Julia's own boot errors. A respawn first moves the last
+  process's log to `julia-startup.prev.log`, so why that process went away
+  is still readable after the restart.
 - GLMakie needs a display even headless, so the session starts a private
   Xvfb and passes it through `DISPLAY` (never `xvfb-run`, which would merge
   the process's stdout and stderr).

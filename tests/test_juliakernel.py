@@ -19,7 +19,12 @@ import pytest
 
 from jutul_agent.juliakernel import JuliaKernel, KernelConfig, OutputChunk
 from jutul_agent.juliakernel.connection import KernelConnection
-from jutul_agent.juliakernel.kernel import JuliaStartupError, _thread_flag, describe_exit
+from jutul_agent.juliakernel.kernel import (
+    JuliaStartupError,
+    _keep_previous_log,
+    _thread_flag,
+    describe_exit,
+)
 
 _HAS_JULIA = shutil.which("julia") is not None
 needs_julia = pytest.mark.skipif(not _HAS_JULIA, reason="requires `julia` on PATH")
@@ -105,6 +110,20 @@ class _Wire:
     async def send(self, raw: bytes) -> None:
         self.writer.write(raw)
         await self.writer.drain()
+
+
+def test_a_respawn_keeps_the_last_log(tmp_path: Path) -> None:
+    log = tmp_path / "julia.log"
+    _keep_previous_log(log)  # no log yet: nothing to keep
+    assert not (tmp_path / "julia.prev.log").exists()
+    log.write_text("")
+    _keep_previous_log(log)  # an empty one says nothing worth keeping
+    assert log.exists() and not (tmp_path / "julia.prev.log").exists()
+    log.write_text("why it died")
+    (tmp_path / "julia.prev.log").write_text("older")
+    _keep_previous_log(log)
+    assert not log.exists()
+    assert (tmp_path / "julia.prev.log").read_text() == "why it died"
 
 
 async def test_connection_routes_frames_to_the_pending_eval() -> None:
