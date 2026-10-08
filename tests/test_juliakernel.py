@@ -354,6 +354,27 @@ async def test_cancelled_eval_interrupts_and_preserves_state() -> None:
 
 @pytest.mark.integration
 @needs_julia
+async def test_a_restart_keeps_the_previous_log_and_says_why(tmp_path: Path) -> None:
+    log = tmp_path / "julia.log"
+    async with JuliaKernel(KernelConfig(stderr_file=log)) as k:
+        assert (k.generation, k.last_restart) == (1, None)
+        # Printed while idle, so into the log; long, because the server holds back
+        # the last few bytes of any output until more follows (a marker prefix).
+        await k.eval('@async (sleep(0.2); println("FROM-THE-FIRST", "-"^60)); nothing')
+        await asyncio.sleep(1.0)
+        assert "FROM-THE-FIRST" in log.read_text()
+        await k.restart("it was asked to")
+        assert k.generation == 2
+        assert k.last_restart is not None and k.last_restart.reason == "it was asked to"
+        assert "FROM-THE-FIRST" in (tmp_path / "julia.prev.log").read_text()
+        assert "FROM-THE-FIRST" not in log.read_text()
+        await k.reset()
+        assert k.generation == 3
+        assert k.last_restart is not None and k.last_restart.reason == "it was reset"
+
+
+@pytest.mark.integration
+@needs_julia
 async def test_an_eval_queued_behind_a_restart_runs_on_the_new_session() -> None:
     """An eval waiting for the lock while a cancel's recovery restarts Julia runs
     on the restarted process, not on the connection the restart tore down.

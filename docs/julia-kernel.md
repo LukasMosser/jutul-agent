@@ -85,7 +85,10 @@ single-threaded so graded results stay deterministic.
 A pure no-allocation spin (`while true; end`) is uninterruptible on any
 Julia configuration. If an interrupt cannot recover the eval within a
 timeout, the supervisor restarts the process and reports whether session
-state was preserved.
+state was preserved. The kernel counts the processes it has started
+(`generation`) and records when and why the latest replaced the one before
+(`last_restart`), so a front end can tell the user that their state is gone,
+and why.
 
 ## Lifecycle and limits
 
