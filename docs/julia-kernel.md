@@ -104,7 +104,10 @@ timeout, the supervisor restarts the process and reports whether session
 state was preserved. The kernel counts the processes it has started
 (`generation`) and records when and why the latest replaced the one before
 (`last_restart`), so a front end can tell the user that their state is gone,
-and why.
+and why. Callbacks registered with `on_restart` hear of every restart, whatever
+caused it, once the fresh process is ready. A callback can return an awaitable
+that sets the fresh process up: other evals wait for it, even ones that were
+already queued when the restart came, so none runs on a half-ready process.
 
 ## Lifecycle and limits
 

@@ -15,6 +15,7 @@ import signal
 import socket
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -139,6 +140,46 @@ def test_a_respawn_keeps_the_last_log(tmp_path: Path) -> None:
     _keep_previous_log(log)
     assert not log.exists()
     assert (tmp_path / "julia.prev.log").read_text() == "why it died"
+
+
+async def test_restart_callbacks_hear_of_every_restart_until_removed(monkeypatch) -> None:
+    """Each callback gets the restart, in the order they came; one that raises is
+    reported the way asyncio reports a failed callback, and the rest still run."""
+    kernel = JuliaKernel(KernelConfig())
+
+    async def _no_process(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(kernel, "_spawn", _no_process)
+    monkeypatch.setattr(kernel, "_teardown", _no_process)
+    loop = asyncio.get_running_loop()
+    reported: list[dict] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    heard: list[str] = []
+
+    def _broken(_restart: object) -> None:
+        raise RuntimeError("broken callback")
+
+    try:
+        remove = kernel.on_restart(lambda r: heard.append(f"first: {r.reason}"))
+        kernel.on_restart(_broken)
+        kernel.on_restart(lambda r: heard.append(f"last: {r.reason}"))
+        await kernel.restart("it was asked to")
+        await kernel.reset()
+        assert heard == [
+            "first: it was asked to",
+            "last: it was asked to",
+            "first: it was reset",
+            "last: it was reset",
+        ]
+        assert [str(context["exception"]) for context in reported] == ["broken callback"] * 2
+        remove()
+        remove()  # removing twice is harmless
+        await kernel.restart()
+        assert heard[-1] == "last: it was restarted"
+        assert "first: it was restarted" not in heard
+    finally:
+        loop.set_exception_handler(None)
 
 
 async def test_connection_routes_frames_to_the_pending_eval() -> None:
@@ -405,16 +446,24 @@ async def test_a_restart_keeps_the_previous_log_and_says_why(tmp_path: Path) -> 
 @needs_julia
 async def test_an_eval_queued_behind_a_restart_runs_on_the_new_session() -> None:
     """An eval waiting for the lock while a cancel's recovery restarts Julia runs
-    on the restarted process, not on the connection the restart tore down.
+    on the restarted process, not on the connection the restart tore down, and
+    after the restart callbacks have set that process up.
 
     A client that gives up on a call can send the next one at once (an MCP client
     does), so it queues behind the recovery. The eval here swallows every
     interrupt, which is what forces the restart; the restart says why.
     """
     async with JuliaKernel(KernelConfig()) as k:
+        restarts: list[Any] = []
+
+        def set_up(restart: Any) -> asyncio.Task[Any]:
+            restarts.append(restart)
+            return asyncio.create_task(_set_up_slowly(k))
+
+        k.on_restart(set_up)
         stuck = asyncio.create_task(k.eval(_SWALLOWS_INTERRUPTS))
         await asyncio.sleep(0.5)  # let it start
-        queued = asyncio.create_task(k.eval("1 + 1"))
+        queued = asyncio.create_task(k.eval("@isdefined(SETUP) && SETUP == getpid()"))
         await asyncio.sleep(0.1)  # let it wait for the lock
         assert k.busy
         stuck.cancel()
@@ -423,11 +472,34 @@ async def test_an_eval_queued_behind_a_restart_runs_on_the_new_session() -> None
         assert not k.cancel_preserved_state, "the eval ignored the interrupt"
         result = await asyncio.wait_for(queued, timeout=60)
         assert result.error is None, result.error
-        assert result.output == "2"
+        assert result.output == "true", "the queued eval ran before the setup"
         assert not k.busy
         assert k.generation == 2
         assert k.last_restart is not None
         assert "did not stop" in k.last_restart.reason
+        # The recovery restarted Julia itself, and still said so to the callbacks.
+        assert restarts == [k.last_restart]
+
+
+@pytest.mark.integration
+@needs_julia
+async def test_evals_after_a_restart_wait_for_its_setup() -> None:
+    """What a restart callback returns sets the fresh process up: evals wait for
+    it, while the evals of what the callback started go ahead (or it never ends)."""
+    async with JuliaKernel(KernelConfig()) as k:
+        k.on_restart(lambda _restart: asyncio.create_task(_set_up_slowly(k)))
+        first_pid = (await k.eval("getpid()")).output
+        await k.reset()
+        result = await asyncio.wait_for(k.eval(f"SETUP == getpid() != {first_pid}"), timeout=60)
+        assert result.error is None, result.error
+        assert result.output == "true"
+
+
+async def _set_up_slowly(kernel: JuliaKernel) -> None:
+    # Slow enough that an eval which did not wait for it would run first.
+    await asyncio.sleep(0.5)
+    result = await kernel.eval("SETUP = getpid()")
+    assert result.error is None, result.error
 
 
 # An eval that ignores interrupts, however they arrive.
