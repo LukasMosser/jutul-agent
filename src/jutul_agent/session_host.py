@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from jutul_agent.agent.capabilities import Capability
     from jutul_agent.session import Session
+    from jutul_agent.session_core import SessionCore
     from jutul_agent.simulators.base import SimulatorAdapter
 
 
@@ -79,9 +80,10 @@ class SessionHost:
         # Whether a turn is running; see the ``busy`` property.
         self._busy = False
         self._active_turn: asyncio.Task[None] | None = None
-        # Background Julia warm-up (load warm package, set GLMakie offscreen); held
-        # so it can be cancelled on teardown. Set by ``start``.
-        self._warmup_task: Any | None = None
+        # The kernel half this host was started on. It owns the background Julia
+        # warm-up (load warm package, set GLMakie offscreen), which runs again after
+        # each restart, so teardown cancels whichever is current. Set by ``start``.
+        self._core: SessionCore | None = None
 
     def attach(self) -> bool:
         """Claim this session for a connection; ``False`` if one already holds it."""
@@ -290,7 +292,7 @@ class SessionHost:
     @property
     def warmup_task(self) -> Any | None:
         """The background Julia warm-up, for a front end that shows warm status."""
-        return self._warmup_task
+        return self._core.warmup_task if self._core is not None else None
 
     @property
     def package_sources(self) -> list[Any]:
@@ -418,7 +420,7 @@ class SessionHost:
         from jutul_agent.session_core import close_session
 
         stack, self._exit_stack = self._exit_stack, None
-        await close_session(self.session, stack, self._warmup_task)
+        await close_session(self.session, stack, self.warmup_task)
 
     @classmethod
     async def start(
@@ -539,7 +541,7 @@ class SessionHost:
             package_sources=core.package_sources,
             add_dirs=add_dirs,
         )
+        host._core = core
         if warmup:
             core.start_warmup()
-            host._warmup_task = core.warmup_task
         return host

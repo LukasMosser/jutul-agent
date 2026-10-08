@@ -160,8 +160,10 @@ timeout, the supervisor restarts the process and says so.
 
 Reset is cheap by design: Julia cannot unload code, so `reset_julia` always
 starts a fresh process and relies on precompile caches to make that fast (see
-warm packages below). The protocol and its design constraints are covered in
-[the Julia kernel](julia-kernel.md).
+warm packages below). Any restart, a reset or a cancel's recovery, runs the
+session's warm-up again on the fresh process, so the session comes back as it
+started rather than as a bare Julia. The protocol and its design constraints
+are covered in [the Julia kernel](julia-kernel.md).
 
 ## Simulators are data
 

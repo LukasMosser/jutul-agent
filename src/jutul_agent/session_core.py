@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -47,9 +47,10 @@ class SessionCore:
     package_sources: list[Any]
     exit_stack: AsyncExitStack
     warmup_task: Any | None = None
+    _warm_started: bool = field(default=False, init=False, repr=False)
 
     def start_warmup(self) -> None:
-        """Warm the kernel in the background (idempotent).
+        """Warm the kernel in the background (idempotent), and again after each restart.
 
         Loads the warm packages and sets GLMakie offscreen, so a native plotter
         can't pop an OS window on a machine with a display. Best-effort and
@@ -59,9 +60,25 @@ class SessionCore:
         surface offers, for the same reason their Julia dependencies are in the
         env: the kernel is per workspace, and a package left unloaded here would
         be loaded by the first tool call that needs it, at the user's expense.
+
+        A restart (``reset_julia``, or a cancelled call that ignored its
+        interrupt) replaces the process, and with it all the warm-up did: the
+        packages, HYPRE's thread count, the ``using GLMakie`` that plotting code
+        calls ``Figure`` through. So the fresh process is warmed the same way,
+        with other calls held until it is loaded, and a restart returns the
+        session to how it started, not to a bare Julia.
         """
-        if self.warmup_task is not None:
+        if self._warm_started:
             return
+        self._warm_started = True
+        self._warm()
+        on_restart = getattr(self.kernel, "on_restart", None)
+        if on_restart is not None:
+            # The stack unwinds in reverse, so this stops listening before the
+            # kernel closes: a restart during teardown can't start a warm-up.
+            self.exit_stack.callback(on_restart(self._rewarm))
+
+    def _warm(self) -> asyncio.Event:
         from jutul_agent.agent.capabilities import collect_warm_code, collect_warm_packages
         from jutul_agent.simulators.warmup import start_warmup
 
@@ -76,10 +93,33 @@ class SessionCore:
             abandonable=abandonable,
         )
         self.session.julia.set_warmup(self.warmup_task, abandonable)
+        return abandonable
+
+    def _rewarm(self, _restart: object) -> asyncio.Future[None] | None:
+        # What is left of the last warm-up was meant for the process the restart
+        # replaced, and would otherwise run its remaining steps on the new one.
+        stale = self.warmup_task
+        if stale is not None and not stale.done():
+            stale.cancel()
+        abandonable = self._warm()
+        if self.warmup_task is None:
+            return None
+        # The kernel holds other calls until this is done, even one queued through
+        # the restart, which would otherwise run first, on a bare process.
+        return asyncio.ensure_future(_loaded(self.warmup_task, abandonable))
 
     async def aclose(self) -> None:
         """Stop the warm-up, close the kernel and the rest of the stack, finalize."""
         await close_session(self.session, self.exit_stack, self.warmup_task)
+
+
+async def _loaded(warmup: asyncio.Task[None], abandonable: asyncio.Event) -> None:
+    """Return once ``warmup`` is past loading, or has ended without getting there."""
+    loaded = asyncio.ensure_future(abandonable.wait())
+    try:
+        await asyncio.wait((warmup, loaded), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        loaded.cancel()
 
 
 async def close_session(

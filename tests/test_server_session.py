@@ -450,6 +450,43 @@ async def test_start_wires_surface_and_capability_dependencies(monkeypatch, tmp_
         await host.aclose()
 
 
+async def test_teardown_stops_the_warmup_a_restart_started(monkeypatch, tmp_path: Path) -> None:
+    """A restart warms the fresh process again, so the warm-up the host reports, and
+    stops before the kernel closes, is whichever is current, not the first."""
+    import jutul_agent.juliakernel as juliakernel_mod
+    from jutul_agent.agent import builder as builder_mod
+    from jutul_agent.agent import capabilities as capabilities_mod
+    from jutul_agent.julia import requirements as requirements_mod
+    from jutul_agent.simulators import warmup as warmup_mod
+
+    kernel = FakeJulia()
+    warmups: list[asyncio.Task[None]] = []
+
+    def _start_warmup(*_args: Any, **_kwargs: Any) -> asyncio.Task[None]:
+        warmups.append(asyncio.create_task(asyncio.sleep(3600)))
+        return warmups[-1]
+
+    monkeypatch.setattr(requirements_mod, "require_julia", lambda *a, **kw: None)
+    monkeypatch.setattr(juliakernel_mod, "JuliaKernel", lambda config: kernel)
+    monkeypatch.setattr(warmup_mod, "start_warmup", _start_warmup)
+    monkeypatch.setattr(builder_mod, "resolve_package_sources", lambda project: [])
+    monkeypatch.setattr(capabilities_mod, "discover_extensions", lambda: [])
+    monkeypatch.setattr(builder_mod, "build_agent", lambda session, **kw: (object(), object()))
+
+    host = await SessionHost.start(
+        simulator=make_fake_adapter(tmp_path),
+        workspace=tmp_path,
+        state_root=tmp_path,
+        surface="web",
+        prepare_env=False,
+    )
+    assert host.warmup_task is warmups[0]
+    await host.session.julia.reset()
+    assert host.warmup_task is warmups[1]
+    await host.aclose()
+    assert warmups[1].cancelled()
+
+
 def test_unbound_server_requires_a_simulator(tmp_path: Path) -> None:
     # No bound simulator (tests / a future multi-folder launcher): the caller must
     # name one, and an omitted simulator is a clear 400 rather than a crash.

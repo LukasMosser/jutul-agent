@@ -113,7 +113,10 @@ already queued when the restart came, so none runs on a half-ready process.
 
 - Reset is restart by design: Julia cannot unload code, so `reset_julia`
   always starts a fresh process. The precompile caches and warm packages
-  make that cheap (see [adding a simulator](adding-a-simulator.md)).
+  make that cheap (see [adding a simulator](adding-a-simulator.md)). The
+  session warms the fresh process as it did the first (through
+  `on_restart`), so the simulator's packages, HYPRE's thread count and the
+  plotting names come back with it, before any other call runs.
 - A user's `include("file.jl")` is rewritten to resolve from the workspace
   (the process working directory) rather than from the server script's own
   directory, which is where Julia would otherwise look.
