@@ -76,6 +76,14 @@ class ToolOutcome:
 # A tool whose own result says Julia restarted, so it needs no notice.
 _RESET_TOOL = "reset_julia"
 
+# Text longer than this reaches the client as its start and end, with the whole
+# of it saved to a file the result names: a printed array or solver log can run
+# to hundreds of thousands of characters, which fills the client's context (the
+# bundled agent's middleware moves such results to a file in the same way).
+TEXT_LIMIT = 32_000
+_TEXT_HEAD = 16_000
+_TEXT_TAIL = 12_000
+
 
 def capability_session_id() -> str:
     """A session id that doubles as the capability to view the session.
@@ -228,6 +236,9 @@ class McpRuntime:
         ]
         notice = self._restart_notice(core, name)
         self._note_live_plots(artifacts)
+        content = shorten_long_text(
+            content, core.session.output_dir / "tool-results" / f"{call_id}.txt"
+        )
         return ToolOutcome(content=content, status=status, artifacts=artifacts, notice=notice)
 
     def _unseen_restart(self, core: SessionCore) -> Any:
@@ -385,6 +396,51 @@ def restart_notice(restart: Any, dead_plots: Sequence[str]) -> str:
         names = ", ".join(f'"{name}"' for name in dead_plots)
         text += f" These live plots no longer update (plot them again): {names}."
     return text
+
+
+def shorten_long_text(content: str | list[Any], full_text: Path) -> str | list[Any]:
+    """``content`` with any text past ``TEXT_LIMIT`` cut to its start and end.
+
+    The whole text is saved to ``full_text`` (numbered when a result has more than
+    one long text), which the shortened text names. Images pass through.
+    """
+    saved = 0
+
+    def shorten(text: str) -> str:
+        nonlocal saved
+        if len(text) <= TEXT_LIMIT:
+            return text
+        saved += 1
+        path = full_text if saved == 1 else full_text.with_stem(f"{full_text.stem}-{saved}")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            where = f"The full text is saved in {path}: read the part you need with Julia."
+        except OSError as exc:
+            where = f"The full text could not be saved ({exc})."
+        head = _TEXT_HEAD
+        # Cut at line ends when one is near, so no line comes out half.
+        if (end := text.rfind("\n", head // 2, head)) != -1:
+            head = end + 1
+        tail = len(text) - _TEXT_TAIL
+        if (start := text.find("\n", tail, tail + _TEXT_TAIL // 2)) != -1:
+            tail = start + 1
+        omitted = tail - head
+        return (
+            f"{text[:head]}\n[... {omitted:,} of {len(text):,} characters omitted. "
+            f"{where}]\n\n{text[tail:]}"
+        )
+
+    if isinstance(content, str):
+        return shorten(content)
+    shortened: list[Any] = []
+    for item in content:
+        if isinstance(item, str):
+            item = shorten(item)
+        elif isinstance(item, dict) and item.get("type") == "text":
+            item = {**item, "text": shorten(str(item.get("text", "")))}
+        shortened.append(item)
+    return shortened
 
 
 def _staged_size(width: Any, height: Any) -> tuple[int, int]:

@@ -22,6 +22,7 @@ from mcp.shared.exceptions import MCPError
 
 from jutul_agent.interfaces.mcp.runtime import (
     SURFACE,
+    TEXT_LIMIT,
     McpLaunch,
     McpRuntime,
     StartupFailed,
@@ -244,6 +245,10 @@ def server_instructions(launch: McpLaunch) -> str:
         f"installed source under `pkgdir({primary})` (its `examples/`, `docs/`, `src/`).",
         "- For code the user keeps, write a `.jl` file in the workspace and "
         "`run_julia('include(\"file.jl\")')` it.",
+        "- Print summaries rather than whole arrays, states or logs (`size`, `extrema`, "
+        "a few entries); a value a call returns is already shown shortened. Text past "
+        f"{TEXT_LIMIT:,} characters reaches you as its start and end, and the result "
+        "names a file holding all of it.",
         "- Build figures only with `plot_julia`, never `run_julia`. Each plot is saved "
         "as a PNG and the result links to an interactive view the user opens in a "
         "browser; share that link. Give related plots a stable `slot`, and pass "

@@ -102,6 +102,12 @@ the interrupt. Either way, the next result starts with a note that says when
 Julia restarted and why, that earlier variables and imports are gone, and which
 live plots no longer update. A `reset_julia` result says so itself.
 
+A text result longer than 32,000 characters (a printed array, a chatty solver
+log) would fill the client's context, so it reaches the client as its start
+and end, about 28,000 characters cut at line ends. The whole text is saved in
+the session's `tool-results/` folder, at a path the result names, and the trace
+keeps it whole.
+
 ## Plots and reports
 
 An MCP client shows text and images, but not a live WebGL figure. So the server

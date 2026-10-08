@@ -300,6 +300,49 @@ async def test_a_reset_says_so_itself(fake_kernel, tmp_path) -> None:
     assert reset.notice is None and after.notice is None
 
 
+def test_long_text_reaches_the_client_as_its_start_and_end(tmp_path) -> None:
+    from jutul_agent.interfaces.mcp.runtime import TEXT_LIMIT, shorten_long_text
+
+    text = "\n".join(f"line {i:06d}" for i in range(10_000))  # 120 000 characters
+    saved = tmp_path / "tool-results" / "call.txt"
+    short = shorten_long_text(text, saved)
+
+    assert len(short) < TEXT_LIMIT
+    assert short.startswith("line 000000\n") and short.endswith("\nline 009999")
+    assert saved.read_text(encoding="utf-8") == text
+    head, rest = short.split("\n[... ", 1)
+    note, tail = rest.split("]\n\n", 1)
+    assert f"characters omitted. The full text is saved in {saved}" in note
+    # Cut at line ends: every line kept is whole.
+    assert {len(line) for line in head.splitlines() + tail.splitlines()} == {11}
+    # Short text and images pass through; each long text is saved on its own.
+    image = {"type": "image", "base64": "AAAA"}
+    blocks = shorten_long_text([{"type": "text", "text": "ok"}, image, text, text], saved)
+    assert blocks[:2] == [{"type": "text", "text": "ok"}, image]
+    assert str(saved) in blocks[2] and str(saved.with_name("call-2.txt")) in blocks[3]
+    assert shorten_long_text("short", saved) == "short"
+
+
+async def test_the_trace_keeps_a_long_result_whole(fake_kernel, tmp_path) -> None:
+    from jutul_agent.interfaces.mcp.runtime import TEXT_LIMIT, McpRuntime
+    from jutul_agent.trace.schema import TOOL_RESULT
+
+    fake_kernel._answers["big"] = "x" * (3 * TEXT_LIMIT)
+    runtime = McpRuntime(_launch(tmp_path))
+    await runtime.start()
+    try:
+        outcome = await runtime.call("run_julia", {"code": "big"})
+        session = runtime.core.session
+        results = [e for e in session.trace.events_after(0) if e.kind == TOOL_RESULT]
+        saved = list((session.output_dir / "tool-results").glob("*.txt"))
+    finally:
+        await runtime.aclose()
+
+    assert len(outcome.content) < TEXT_LIMIT
+    assert "x" * (3 * TEXT_LIMIT) in results[-1].payload["content"]
+    assert len(saved) == 1 and "x" * (3 * TEXT_LIMIT) in saved[0].read_text(encoding="utf-8")
+
+
 def test_artifact_links_point_into_the_viewer(tmp_path) -> None:
     from jutul_agent.interfaces.mcp.runtime import artifact_links
 
