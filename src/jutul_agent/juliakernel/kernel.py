@@ -104,6 +104,7 @@ class JuliaKernel:
         self._stderr_fh: IO[bytes] | None = None
         self._token = ""
         self._lock = asyncio.Lock()
+        self._evals = 0  # running or waiting for the lock
         self._cancel_preserved_state = True
         self._generation = 0
         self._last_restart: KernelRestart | None = None
@@ -125,6 +126,15 @@ class JuliaKernel:
             and self._conn is not None
             and not self._conn.closed.is_set()
         )
+
+    @property
+    def busy(self) -> bool:
+        """Whether an eval is running or waiting for its turn.
+
+        Work nobody waits on (a plot re-fit) checks this to run only on an idle
+        kernel, so that a deadline it sets counts its own time, not the queue's.
+        """
+        return self._evals > 0
 
     @property
     def generation(self) -> int:
@@ -196,6 +206,13 @@ class JuliaKernel:
         """
         if self._proc is None:
             raise RuntimeError("JuliaKernel must be used inside an `async with` block")
+        self._evals += 1
+        try:
+            return await self._eval_locked(code, on_chunk)
+        finally:
+            self._evals -= 1
+
+    async def _eval_locked(self, code: str, on_chunk: OnChunk | None) -> EvalResult:
         async with self._lock:
             # Checked under the lock: an eval queued behind a cancelled one can find
             # that the cancel's recovery restarted Julia, with a new connection.

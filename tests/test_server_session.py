@@ -1210,6 +1210,32 @@ async def test_a_wedged_refit_gives_the_kernel_back(tmp_path: Path) -> None:
     assert echoed is None and err is not None and "in time" in err
 
 
+async def test_a_refit_deadline_counts_only_the_resize(tmp_path: Path) -> None:
+    # A refit that queued behind a long eval used to count the queue against its
+    # deadline, so it could expire just as the resize began, and cancelling then
+    # interrupts Julia mid-resize: wasted at best, and a restart when the
+    # interrupt went astray. It now waits for an idle kernel and only then starts
+    # the clock, so a long wait in the queue costs nothing.
+    from jutul_agent.agent import plot_julia
+    from jutul_agent.agent.plot_julia import refit_web
+
+    _st, _ws, session = _plot_state(tmp_path)
+    session.julia.busy = True  # a long eval holds the kernel
+    monkey = plot_julia.REFIT_TIMEOUT_S
+    plot_julia.REFIT_TIMEOUT_S = 0.05
+    try:
+        refit = asyncio.create_task(refit_web(session, "res", [900, 600]))
+        await asyncio.sleep(0.5)  # ten deadlines
+        assert not refit.done()
+        assert not any("resize!" in code for code in session.julia.calls)
+        session.julia.busy = False
+        err, echoed = await asyncio.wait_for(refit, timeout=5)
+    finally:
+        plot_julia.REFIT_TIMEOUT_S = monkey
+    assert err is None, err
+    assert echoed == [900, 600]
+
+
 async def test_refit_queues_behind_a_running_turn_without_blocking(tmp_path: Path) -> None:
     # A refit during a simulation must neither be dropped (the stage would stay
     # letterboxed with nothing to retry it) nor block the WebSocket loop (a

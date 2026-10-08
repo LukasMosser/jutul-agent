@@ -354,6 +354,19 @@ async def test_cancelled_eval_interrupts_and_preserves_state() -> None:
 
 @pytest.mark.integration
 @needs_julia
+async def test_busy_while_an_eval_runs_or_waits_its_turn() -> None:
+    async with JuliaKernel(KernelConfig()) as k:
+        assert not k.busy
+        running = asyncio.create_task(k.eval("sleep(0.5); 1"))
+        queued = asyncio.create_task(k.eval("2"))
+        await asyncio.sleep(0.2)
+        assert k.busy
+        assert [(await running).output, (await queued).output] == ["1", "2"]
+        assert not k.busy
+
+
+@pytest.mark.integration
+@needs_julia
 async def test_a_restart_keeps_the_previous_log_and_says_why(tmp_path: Path) -> None:
     log = tmp_path / "julia.log"
     async with JuliaKernel(KernelConfig(stderr_file=log)) as k:
