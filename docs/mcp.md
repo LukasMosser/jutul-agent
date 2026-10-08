@@ -81,7 +81,7 @@ The tools:
 | `run_julia` | Evaluate code in the persistent session; state persists across calls |
 | `reset_julia` | Restart the Julia process when its state is wedged |
 | `plot_julia` | Build a figure: saved as a PNG, served live, linked in the result |
-| `recapture_plot` | Re-render a live plot after its in-figure widgets changed |
+| `recapture_plot` | Snapshot a live plot as the user left it (its view must be open in a browser) |
 | `close_plots` | Close live plots |
 | `record_attempt` | Log one step of an investigation and its outcome |
 | `write_report` | Write an HTML report of the session |

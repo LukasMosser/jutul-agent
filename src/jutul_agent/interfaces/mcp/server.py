@@ -255,6 +255,11 @@ def server_instructions(launch: McpLaunch) -> str:
         "`view=true` only when you need to see the image yourself. A simulator's own "
         "plotting functions may open windows of their own; the guides say how to get "
         "the figure back instead.",
+        "- `recapture_plot(slot=...)` shows you a live view as the user left it "
+        "(rotated, zoomed, stepped). It reads the view from the browser, so the plot's "
+        "link must be open in one: if it is not, open it (in your browser canvas, if "
+        "you have one) or ask the user to. You can't step a live view or change its "
+        "field yourself: plot again with the same `slot`.",
         "- `record_attempt` logs an approach and its outcome; `write_report` writes an "
         "HTML report of the session.",
         "- The first call can take a while: Julia loads the simulator once per session.",
