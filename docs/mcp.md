@@ -96,8 +96,11 @@ carrying the last finished line of output, at most twice a second. A client
 that shows progress lets the user watch a long solve. Cancelling a call from the
 client interrupts Julia and waits for the interrupted code to unwind, so the
 session stays usable for the next call, with its variables. If the code ignores
-the interrupt, Julia restarts. The client never sees the cancelled call's
-result, so the next result starts with a note that earlier state is gone.
+the interrupt, Julia restarts. Julia can also restart with no call waiting on
+it, when a plot re-fit (a resize in the viewer) overruns and its code ignores
+the interrupt. Either way, the next result starts with a note that says when
+Julia restarted and why, that earlier variables and imports are gone, and which
+live plots no longer update. A `reset_julia` result says so itself.
 
 ## Plots and reports
 
@@ -115,8 +118,10 @@ The interactive link opens the live figure in a browser, where its widgets and
 camera work. Open it in one window: a live figure is built for a single view,
 and a second window on the same figure can leave clicks and selection
 misbehaving. Plotting again (the same `slot` replaces the figure) gives a fresh
-one. Reports and static plots link to their files. With `--no-viewer`, results
-give the saved paths only.
+one. A live figure lives in the Julia session, so it ends when Julia restarts;
+its link then opens a page that says so and why, until a plot in the same
+`slot` serves it again. Reports and static plots link to their files. With
+`--no-viewer`, results give the saved paths only.
 
 `plot_julia` returns the PNG to the model only when the call asks for it
 (`view=true`), as in the other interfaces.

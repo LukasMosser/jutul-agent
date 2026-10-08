@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
@@ -205,41 +206,98 @@ async def test_a_cancelled_call_lets_julia_recover_first(fake_kernel, tmp_path) 
         await runtime.aclose()
 
 
-async def test_the_next_result_says_a_cancel_cost_the_session_its_state(
+async def test_the_next_result_says_julia_restarted_and_which_plots_died(
     fake_kernel, tmp_path
 ) -> None:
     """When a cancelled eval ignores the interrupt, Julia restarts. The client never
-    sees the cancelled call's result, so the next one carries the news, once."""
+    sees the cancelled call's result, so the next one carries the news, once: when,
+    why, and which live plots no longer update."""
     from jutul_agent.interfaces.mcp.runtime import McpRuntime
     from jutul_agent.interfaces.mcp.server import call_result
+    from jutul_agent.juliakernel.kernel import KernelRestart
+    from jutul_agent.trace.schema import ARTIFACT, TOOL_RESULT, artifact_payload
 
+    runtime = McpRuntime(_launch(tmp_path))
     started = asyncio.Event()
 
     async def _eval(code: str) -> EvalResult:
+        if code == "plot":
+            runtime.core.session.trace.append(
+                ARTIFACT,
+                artifact_payload(
+                    path="artifacts/p.png",
+                    mime="image/png",
+                    caption="Pressure",
+                    kind="plot",
+                    slot="pressure",
+                    live_url="/live/s/viz/pressure",
+                ),
+            )
         if code == "stuck":
             started.set()
-            await asyncio.sleep(30)
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # What the kernel does when the interrupt goes unheeded.
+                fake_kernel.generation += 1
+                fake_kernel.last_restart = KernelRestart(time.time(), "the eval did not stop")
+                raise
         return EvalResult(output="42")
 
     fake_kernel._eval_handler = _eval
-    fake_kernel.cancel_preserved_state = False  # what the kernel reports after a restart
-    runtime = McpRuntime(_launch(tmp_path))
+    fake_kernel.generation = 1
     await runtime.start()
     try:
         await runtime.ready()
+        assert (await runtime.call("run_julia", {"code": "plot"})).notice is None
         async with anyio.create_task_group() as group:
             group.start_soon(runtime.call, "run_julia", {"code": "stuck"})
             await started.wait()
             group.cancel_scope.cancel()
+        cancelled = list(runtime.core.session.trace.events_after(0))[-1]
         after = call_result(await runtime.call("run_julia", {"code": "x"}), [])
         again = call_result(await runtime.call("run_julia", {"code": "x"}), [])
     finally:
         await runtime.aclose()
 
+    assert cancelled.kind == TOOL_RESULT
+    restarted = "Julia restarted because the eval did not stop."
+    assert cancelled.payload["content"] == f"Cancelled. {restarted}"
     assert not after.is_error
-    assert "session restarted" in after.content[0].text
+    notice = after.content[0].text
+    assert notice.startswith(
+        "Note: Julia restarted under a minute ago because the eval did not stop. "
+        "Variables and `using` imports from before are gone."
+    )
+    assert 'no longer update (plot them again): "Pressure"' in notice
     assert "42" in after.content[1].text
     assert "restarted" not in _text(again)
+
+
+async def test_a_reset_says_so_itself(fake_kernel, tmp_path) -> None:
+    """``reset_julia`` restarts Julia because the client asked; its own result says
+    so, and no notice repeats it."""
+    from jutul_agent.interfaces.mcp.runtime import McpRuntime
+    from jutul_agent.juliakernel.kernel import KernelRestart
+
+    async def _reset() -> EvalResult:
+        fake_kernel.generation += 1
+        fake_kernel.last_restart = KernelRestart(time.time(), "it was reset")
+        return EvalResult(output="")
+
+    fake_kernel.generation = 1
+    fake_kernel.reset = _reset
+    runtime = McpRuntime(_launch(tmp_path))
+    await runtime.start()
+    try:
+        reset = await runtime.call("reset_julia", {})
+        after = await runtime.call("run_julia", {"code": "x"})
+    finally:
+        await runtime.aclose()
+
+    assert fake_kernel.generation == 2
+    assert "restarted" in str(reset.content)
+    assert reset.notice is None and after.notice is None
 
 
 def test_artifact_links_point_into_the_viewer(tmp_path) -> None:

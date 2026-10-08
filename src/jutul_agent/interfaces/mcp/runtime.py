@@ -69,17 +69,12 @@ class ToolOutcome:
     content: str | list[Any]
     status: str
     artifacts: list[dict[str, Any]]
-    # Something the client missed: a cancelled call whose result it never saw.
+    # Something the client missed, such as Julia restarting since its last result.
     notice: str | None = None
 
 
-# The tools that run Julia code, so cancelling them interrupts an eval.
-_EVAL_TOOLS = frozenset({"run_julia", "plot_julia", "recapture_plot"})
-
-_STATE_LOST = (
-    "Note: a cancelled call's Julia code ignored the interrupt, so the session "
-    "restarted. Variables and `using` imports from before are gone."
-)
+# A tool whose own result says Julia restarted, so it needs no notice.
+_RESET_TOOL = "reset_julia"
 
 
 def capability_session_id() -> str:
@@ -103,7 +98,10 @@ class McpRuntime:
         self.viewer: LoopbackViewer | None = None
         self._tools: dict[str, BaseTool] = {}
         self._startup: asyncio.Task[None] | None = None
-        self._notice: str | None = None
+        # The Julia process the client last heard about (the kernel's
+        # ``generation``), and the live plots it serves: plot id -> caption.
+        self._seen_generation: int | None = None
+        self._live_plots: dict[str, str] = {}
 
     async def start(self) -> None:
         """Serve the viewer, and start the session behind it (without waiting)."""
@@ -139,6 +137,7 @@ class McpRuntime:
             sysimage=launch.sysimage,
         )
         self.core = core  # from here on, ``aclose`` owns it
+        self._seen_generation = getattr(core.session.julia, "generation", None)
         self._tools = {
             tool.name: tool
             for tool in build_tools(core.session, surface=SURFACE, extensions=core.extensions)
@@ -203,22 +202,14 @@ class McpRuntime:
         try:
             content, status = await _cancel_once(task)
         except asyncio.CancelledError:
-            # The client never sees this call's result, so if the cancel cost the
-            # session its state, the next result says so.
-            lost = (
-                name in _EVAL_TOOLS
-                and task.done()
-                and not getattr(core.session.julia, "cancel_preserved_state", True)
-            )
-            if lost:
-                self._notice = _STATE_LOST
+            # The client never sees this call's result, so a restart the cancel
+            # caused is left unseen: the next result says so.
+            restart = self._unseen_restart(core)
+            note = f" Julia restarted because {restart.reason}." if restart is not None else ""
             trace.append(
                 TOOL_RESULT,
                 tool_result_payload(
-                    tool_call_id=call_id,
-                    name=name,
-                    content=f"Cancelled. {_STATE_LOST}" if lost else "Cancelled.",
-                    status="error",
+                    tool_call_id=call_id, name=name, content=f"Cancelled.{note}", status="error"
                 ),
             )
             raise
@@ -235,8 +226,42 @@ class McpRuntime:
             for event in trace.events_after(mark)
             if event.kind == ARTIFACT and event.payload.get("tool_call_id") in (call_id, None)
         ]
-        notice, self._notice = self._notice, None
+        notice = self._restart_notice(core, name)
+        self._note_live_plots(artifacts)
         return ToolOutcome(content=content, status=status, artifacts=artifacts, notice=notice)
+
+    def _unseen_restart(self, core: SessionCore) -> Any:
+        """Julia's latest restart (``last_restart``), if the client has not heard of
+        it yet; else None (also for a kernel that does not count its restarts)."""
+        julia = core.session.julia
+        if getattr(julia, "generation", None) in (None, self._seen_generation):
+            return None
+        return getattr(julia, "last_restart", None)
+
+    def _restart_notice(self, core: SessionCore, name: str) -> str | None:
+        """Tell the client, once, that Julia restarted since its last result.
+
+        A restart loses everything the session held, and the client may not have
+        caused it: a cancelled call whose code ignored the interrupt, or a plot
+        re-fit that overran, restarts Julia with nobody waiting on the result. The
+        live plots served before it no longer update, so the notice names them.
+        """
+        restart = self._unseen_restart(core)
+        if restart is None:
+            return None
+        self._seen_generation = core.session.julia.generation
+        dead = list(self._live_plots.values())
+        self._live_plots.clear()
+        return None if name == _RESET_TOOL else restart_notice(restart, dead)
+
+    def _note_live_plots(self, artifacts: list[dict[str, Any]]) -> None:
+        """Remember the live plots a call served, so a restart can name them."""
+        from jutul_agent.agent.plot_julia import _plot_id_of
+
+        for payload in artifacts:
+            if payload.get("live_url"):
+                plot_id = _plot_id_of(payload)
+                self._live_plots[plot_id] = str(payload.get("caption") or plot_id)
 
     def artifact_links(self, payloads: list[dict[str, Any]]) -> list[str]:
         """Where the user can see what a call produced: viewer URLs and file paths."""
@@ -343,6 +368,23 @@ def artifact_links(
             lines.append(f"{title}: {base_url}{event['url']}")
         lines.append(f"  saved as {path}")
     return lines
+
+
+def restart_notice(restart: Any, dead_plots: Sequence[str]) -> str:
+    """The note a result carries when Julia restarted: when, why, and what is gone.
+
+    ``restart`` is the kernel's ``last_restart`` (``at``, ``reason``).
+    """
+    from jutul_agent.interfaces.server.viewer import time_ago
+
+    text = (
+        f"Note: Julia restarted {time_ago(restart.at)} because {restart.reason}. "
+        "Variables and `using` imports from before are gone."
+    )
+    if dead_plots:
+        names = ", ".join(f'"{name}"' for name in dead_plots)
+        text += f" These live plots no longer update (plot them again): {names}."
+    return text
 
 
 def _staged_size(width: Any, height: Any) -> tuple[int, int]:
